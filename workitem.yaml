@@ -1,1 +1,80 @@
+trigger: none  # Manual trigger
 
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  OUTAGE_DURATION_MINUTES: 240  # ⏱️ Outage duration (e.g., from AI agent in real case)
+  SLA_THRESHOLD_MINUTES: 180    # 🛡️ SLA/threshold for maximum acceptable outage time
+  TITLE: 'Outage Mitigation Time Exceeded Please fix this'
+  ASSIGNED_TO: 'clovdon1@outlook.com'  # 🔧 Update with valid user email in Azure DevOps
+  TAGS: 'Outage;HighPriority;SLA'
+  ORG_URL: 'https://dev.azure.com/clovdon10203/'
+  PROJECT: 'My%20First%20Project'
+  WORKITEM_TYPE: 'Task'
+
+steps:
+
+- task: Bash@3
+  displayName: '🚨 Check outage duration and create work item if needed'
+  env:
+    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+  inputs:
+    targetType: 'inline'
+    script: |
+      set -euo pipefail
+
+      echo "🔍 Checking outage duration..."
+      outage_duration=$(echo $OUTAGE_DURATION_MINUTES)
+      sla_threshold=$(echo $SLA_THRESHOLD_MINUTES)
+
+      echo "⏱️ Outage duration: $outage_duration min"
+      echo "📏 SLA threshold: $sla_threshold min"
+
+      if (( outage_duration > sla_threshold )); then
+        echo "⚠️ SLA breached: creating work item..."
+
+        title="$TITLE"
+        description="An outage incident was detected where the time to mitigate exceeded the SLA.\n\nActual time to mitigate: ${outage_duration} minutes.\nSLA threshold: ${sla_threshold} minutes.\n\nPlease investigate and optimize the mitigation process."
+
+        # Build JSON payload
+        payload=$(jq -n \
+          --arg title "$title" \
+          --arg desc "$description" \
+          --arg assignee "$ASSIGNED_TO" \
+          --arg tags "$TAGS" \
+          '[
+            { "op": "add", "path": "/fields/System.Title", "value": $title },
+            { "op": "add", "path": "/fields/System.Description", "value": $desc },
+            { "op": "add", "path": "/fields/System.AssignedTo", "value": $assignee },
+            { "op": "add", "path": "/fields/System.Tags", "value": $tags }
+          ]')
+
+        echo "📦 Payload for work item:"
+        echo "$payload"
+
+        # Compose API URL
+        api_url="${ORG_URL}My%20First%20Project/_apis/wit/workitems/\$${WORKITEM_TYPE}?api-version=7.1-preview.3"
+        echo "🌐 API: $api_url"
+
+        # Send API request
+        http_code=$(curl -sS -o response.json -w "%{http_code}" \
+          -X POST "$api_url" \
+          -H "Content-Type: application/json-patch+json" \
+          -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" \
+          -d "$payload")
+
+        echo "🔁 API response code: $http_code"
+        echo "📨 Response body:"
+        cat response.json || echo "No response."
+
+        if [[ "$http_code" == "200" || "$http_code" == "201" ]]; then
+          echo "✅ Work item created successfully."
+        else
+          echo "❌ Failed to create work item."
+          exit 1
+        fi
+
+      else
+        echo "✅ Outage duration is within SLA. No work item needed."
+      fi
